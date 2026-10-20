@@ -158,3 +158,252 @@
   });
 
 })();
+
+/* ===================================================================
+   MICRO-INTERACTIONS — независимый IIFE, старая логика выше не тронута.
+   Все эффекты отключаются при prefers-reduced-motion и на тач-устройствах
+   там, где это уместно.
+   =================================================================== */
+(function(){
+  "use strict";
+
+  var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var finePointer  = !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+  var hasIO        = 'IntersectionObserver' in window;
+
+  function safe(fn){
+    try{ fn(); }
+    catch(err){ if(window.console && console.warn) console.warn('[micro-interactions]', err); }
+  }
+
+  /* ============ 1. SCROLL REVEAL (fade-in-up через IntersectionObserver) ============ */
+  safe(function(){
+    if(reduceMotion || !hasIO) return;
+    var groups = [
+      '.section-head',
+      '.about__list li',
+      '.grid-4 > .card',
+      '.grid-3 > .benefit',
+      '.grid-3 > .testimonial',
+      '.results__grid > div',
+      '.stats > .stat',
+      '.plans > .plan',
+      '.schedule',
+      '.faq > details',
+      '.contact-list li',
+      '#contacts .form'
+    ];
+    var els = [];
+    groups.forEach(function(sel){
+      Array.prototype.forEach.call(document.querySelectorAll(sel), function(el, i){
+        el.classList.add('reveal');
+        el.style.setProperty('--rd', Math.min(i, 4) * 70 + 'ms');
+        els.push(el);
+      });
+    });
+    if(!els.length) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          e.target.classList.add('is-visible');
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    els.forEach(function(el){ io.observe(el); });
+  });
+
+  /* ============ 2. AURORA BORDER GLOW (--mx/--my следят за курсором) ============ */
+  safe(function(){
+    if(!finePointer) return;
+    Array.prototype.forEach.call(
+      document.querySelectorAll('.card, .benefit, .plan, .testimonial'),
+      function(el){
+        var rect = null;
+        function paint(e){
+          if(!rect) return;
+          el.style.setProperty('--mx', (e.clientX - rect.left).toFixed(1) + 'px');
+          el.style.setProperty('--my', (e.clientY - rect.top).toFixed(1) + 'px');
+        }
+        el.addEventListener('pointerenter', function(e){ rect = el.getBoundingClientRect(); paint(e); }, {passive:true});
+        el.addEventListener('pointermove', function(e){ if(!rect) rect = el.getBoundingClientRect(); paint(e); }, {passive:true});
+        el.addEventListener('pointerleave', function(){ rect = null; }, {passive:true});
+      }
+    );
+  });
+
+  /* ============ 3. MAGNETIC BUTTONS (притяжение CTA к курсору) ============ */
+  safe(function(){
+    if(reduceMotion || !finePointer) return;
+    Array.prototype.forEach.call(
+      document.querySelectorAll('.hero__actions .btn, .header__cta'),
+      function(btn){
+        btn.addEventListener('pointermove', function(e){
+          var r = btn.getBoundingClientRect();
+          var dx = (e.clientX - r.left - r.width / 2) / (r.width / 2 || 1);
+          var dy = (e.clientY - r.top - r.height / 2) / (r.height / 2 || 1);
+          btn.style.transform = 'translate(' + (dx * 7).toFixed(1) + 'px,' + (dy * 5).toFixed(1) + 'px)';
+        }, {passive:true});
+        btn.addEventListener('pointerleave', function(){ btn.style.transform = ''; }, {passive:true});
+      }
+    );
+  });
+
+  /* ============ 4. COUNTERS (цифры плавно накручиваются от 0) ============ */
+  safe(function(){
+    if(reduceMotion || !hasIO) return;
+    var nums = document.querySelectorAll('.hero__stats b, .stats .stat b');
+    if(!nums.length) return;
+
+    function animate(el){
+      var original = el.textContent;
+      var m = original.match(/^(\D*)(\d+(?:[ \u00A0]\d{3})*)(.*)$/);
+      if(!m) return;
+      var prefix = m[1], suffix = m[3];
+      var sepMatch = m[2].match(/[ \u00A0]/);
+      var sep = sepMatch ? sepMatch[0] : '';
+      var target = parseInt(m[2].replace(/[ \u00A0]/g, ''), 10);
+      if(!isFinite(target)) return;
+
+      function format(v){
+        var s = String(v);
+        if(sep) s = s.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+        return prefix + s + suffix;
+      }
+
+      var delay = 0;
+      if(el.parentNode){
+        delay = Math.max(0, Array.prototype.indexOf.call(el.parentNode.children, el)) * 100;
+      }
+      var startTs = null, dur = 1500;
+      function step(ts){
+        if(startTs === null) startTs = ts;
+        var p = Math.min((ts - startTs) / dur, 1);
+        var eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = format(Math.round(target * eased));
+        if(p < 1) requestAnimationFrame(step);
+      }
+      setTimeout(function(){ requestAnimationFrame(step); }, delay);
+    }
+
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){ io.unobserve(e.target); animate(e.target); }
+      });
+    }, { threshold: 0.6 });
+    Array.prototype.forEach.call(nums, function(el){ io.observe(el); });
+  });
+
+  /* ============ 5. SPOTLIGHT (мягкий свет следует за курсором по фону) ============ */
+  safe(function(){
+    if(reduceMotion || !finePointer) return;
+    var spot = document.createElement('div');
+    spot.className = 'cursor-spotlight';
+    spot.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(spot);
+    var x = -500, y = -500, queued = false;
+    function paint(){
+      queued = false;
+      spot.style.setProperty('--sx', x + 'px');
+      spot.style.setProperty('--sy', y + 'px');
+      spot.classList.add('is-on');
+    }
+    document.addEventListener('pointermove', function(e){
+      x = e.clientX; y = e.clientY;
+      if(!queued){ queued = true; requestAnimationFrame(paint); }
+    }, {passive:true});
+  });
+
+  /* ============ 6. ЖИВОЙ ТЕРМИНАЛ (печатная машинка, клик = допечатать) ============ */
+  safe(function(){
+    if(reduceMotion || !hasIO) return;
+    var term = document.querySelector('.terminal');
+    if(!term) return;
+    var lines = Array.prototype.slice.call(term.querySelectorAll('p'));
+    if(!lines.length) return;
+
+    /* токенизация: <span class="prompt|out|dim"> сохраняется при печати */
+    function parse(html){
+      var tokens = [], re = /<span class="([^"]*)">([\s\S]*?)<\/span>/g, last = 0, m;
+      while((m = re.exec(html))){
+        if(m.index > last) tokens.push({ t: html.slice(last, m.index), c: '' });
+        tokens.push({ t: m[2], c: m[1] });
+        last = m.index + m[0].length;
+      }
+      if(last < html.length) tokens.push({ t: html.slice(last), c: '' });
+      var chars = [];
+      tokens.forEach(function(tk){
+        for(var i = 0; i < tk.t.length; i++){ chars.push({ ch: tk.t.charAt(i), c: tk.c }); }
+      });
+      return chars;
+    }
+    function esc(ch){
+      return ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : ch === '>' ? '&gt;' : ch;
+    }
+    function render(el, chars, count){
+      var html = '', i = 0;
+      while(i < count){
+        var cls = chars[i].c, seg = '';
+        while(i < count && chars[i].c === cls){ seg += esc(chars[i].ch); i++; }
+        html += cls ? '<span class="' + cls + '">' + seg + '</span>' : seg;
+      }
+      el.innerHTML = html;
+    }
+
+    var items = lines.map(function(p){
+      return { el: p, orig: p.innerHTML, chars: parse(p.innerHTML) };
+    });
+    var idx = 0, pos = 0, timer = null, started = false, finished = false;
+
+    function attachCursor(el){
+      var cur = term.querySelector('.term-cursor');
+      if(!cur){
+        cur = document.createElement('span');
+        cur.className = 'term-cursor';
+        cur.setAttribute('aria-hidden', 'true');
+      }
+      el.appendChild(cur);
+    }
+
+    function finishAll(){
+      finished = true;
+      if(timer){ clearTimeout(timer); timer = null; }
+      items.forEach(function(it){ it.el.innerHTML = it.orig; });
+      var c = term.querySelector('.term-cursor');
+      if(c && c.parentNode) c.parentNode.removeChild(c);
+    }
+
+    function step(){
+      if(finished) return;
+      if(idx >= items.length){ finished = true; return; }
+      var it = items[idx], chars = it.chars;
+      if(pos >= chars.length){ idx++; pos = 0; timer = setTimeout(step, 300); return; }
+      pos++;
+      render(it.el, chars, pos);
+      attachCursor(it.el);
+      var ch = chars[pos - 1].ch;
+      var delay = 16 + Math.random() * 20;
+      if(ch === '\u2500') delay = 5;          /* разделители ─ печатаются мгновенно */
+      if(ch === '.') delay += 60;
+      if(ch === '$') delay += 130;
+      timer = setTimeout(step, delay);
+    }
+
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(!e.isIntersecting || started) return;
+        started = true;
+        io.disconnect();
+        items.forEach(function(it){ it.el.innerHTML = ''; });
+        step();
+      });
+    }, { threshold: 0.45 });
+    io.observe(term);
+
+    term.addEventListener('click', function(){
+      if(started && !finished) finishAll();
+    });
+  });
+
+})();
+
